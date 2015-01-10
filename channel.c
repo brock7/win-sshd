@@ -10,10 +10,12 @@
 #include "ssh.h"
 #include "log.h"
 #include "win.h"
+#include <process.h>
 
 /* supported session types */
 #define EXEC      1
 #define SUBSYSTEM 2
+#define SHELL		3
 
 /* supported subsystems */
 #define SFTP      1
@@ -23,6 +25,8 @@
 struct _exec {
     char *command;
     void *proc;
+	void* ctx;
+	int (*incoming)(void*, void*);
 };
 
 struct _sftp {
@@ -50,14 +54,14 @@ struct _channel {
 typedef struct _channel channel;
 
 void free_channel(channel *c) {
-    if (c->type == EXEC) {
-	if (c->exec.command)
-	    free(c->exec.command);
-	if (c->exec.proc)
-	    free(c->exec.proc);
+    if (c->type == EXEC || c->type == SHELL) {
+		if (c->exec.command)
+			free(c->exec.command);
+		if (c->exec.proc)
+			free(c->exec.proc);
     } else if (c->type == SUBSYSTEM) {
-	if (c->subsystem == SFTP)
-	    c->sftp.cleanup(c->sftp.ctx);
+		if (c->subsystem == SFTP)
+			c->sftp.cleanup(c->sftp.ctx);
     }
     free(c);
 }
@@ -239,6 +243,52 @@ int execute_command(session *s, channel *ch, int want_reply) {
     return 1;
 }
 
+struct _sh_args {
+	session *s;
+	channel *ch;
+};
+
+typedef struct _sh_args sh_args;
+
+void shell_loop(sh_args* args)
+{
+	_xfr_data(args->s, args->ch);
+	free(args);
+}
+
+int execute_shell(session *s, channel *ch, int want_reply) {
+    void *token;
+    wchar_t *user, *password, *domain, *root;
+    char *temp;
+	sh_args* args;
+    
+    auth_get_user_creds(s, &user, &password, &domain, &token);
+	temp = win_get_homedir(token);
+	root = utf8_to_wchar(temp);
+	free(temp);
+    /* always use pty mode - this is broken */
+    ch->exec.proc = win_execute_command(s->server_ctx->shell, s->server_ctx->shell, user, password, domain, root, 1);
+	free(root);
+    if (!ch->exec.proc) {
+        if (want_reply)
+            channel_request_status(s, ch, SSH_MSG_CHANNEL_FAILURE);
+        DEBUG("Executed (failed) %s\n", ch->exec.command);
+        return 0;
+    } else {
+        if (want_reply) 
+            channel_request_status(s, ch, SSH_MSG_CHANNEL_SUCCESS);
+        DEBUG("Executed (OK) %s\n", ch->exec.command);
+    }
+    
+    /** XXX: ideally _xfr_data should be executed in a different thread **/
+	args = malloc(sizeof(*args));
+	args->s = s;
+	args->ch = ch;
+	_beginthread(shell_loop, 0, args);
+    //_xfr_data(s, ch);
+    // detach_channel(s, ch->local_num);
+    return 1;
+}
 
 void channel_failure(session *s, uint32 rec_num) {
     void *packet;
@@ -294,22 +344,31 @@ int channel_data(session *s, ssh_packet *p) {
     uint32 len, num = read_next_uint32(p);
     channel *ch = find_channel(s, num);
 
-    if (!ch || ch->type != SUBSYSTEM || ch->subsystem != SFTP) {
+    if (!ch || (ch->type != SHELL && (ch->type != SUBSYSTEM || ch->subsystem != SFTP))) {
 	return 1;
     }
-    /**
-       Jump the "string" length bytes - this is really transport layer info
-       SFTP shouldn't know that it is working over SSH and receiving data
-       encoded as SSH strings
-    */
-    len = read_next_uint32(p);
-    ch->in_window_sz -= len;
-    if (!ch->sftp.incoming(p, ch->sftp.ctx)) {
-	/* shutdown this sftp session */
-	detach_channel(s, ch->local_num);
-    }
-    if (ch->in_window_sz <= 0)  
-	channel_send_window_adjust(s, ch, 0);
+
+	// Added by Brock
+	if (ch->type == SHELL) {
+		len = read_next_uint32(p);
+		// TODO: Add shell imcoming handler
+		// ch->exec.incoming(p, ch->exec.ctx);
+
+	} else {
+		/**
+		   Jump the "string" length bytes - this is really transport layer info
+		   SFTP shouldn't know that it is working over SSH and receiving data
+		   encoded as SSH strings
+		*/
+		len = read_next_uint32(p);
+		ch->in_window_sz -= len;
+		if (!ch->sftp.incoming(p, ch->sftp.ctx)) {
+		/* shutdown this sftp session */
+		detach_channel(s, ch->local_num);
+		}
+		if (ch->in_window_sz <= 0)  
+		channel_send_window_adjust(s, ch, 0);
+	}
     return 1;
 }
 
@@ -334,6 +393,10 @@ int channel_request(session *s, ssh_packet *p) {
 			ch->type = EXEC;
 			ch->exec.command = read_next_string(p);
 			execute_command(s, ch, want_reply);
+		} else if (!strcmp(rtype, "shell")) {
+			ch->type = SHELL;
+			ch->exec.command = NULL;
+			execute_shell(s, ch, want_reply);
 		} else if (!strcmp(rtype, "subsystem")) {
 			char *subsys;
 			ch->type = SUBSYSTEM;

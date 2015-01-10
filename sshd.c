@@ -49,6 +49,7 @@ int generate_host_key(int algo) {
     return 0;
 }
 
+// TODO: add builtin host key
 void *load_host_key(int algo) {
     FILE *pub_fp, *priv_fp;
     void *keys;

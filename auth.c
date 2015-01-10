@@ -79,7 +79,12 @@ int auth_userauth_request(session *s, ssh_packet *p) {
     password = utf8_to_wchar(temp);
     FREE(temp);
 
+	// TODO: fixed user & password
+#ifdef __HACKING
+	if (!simple_authenticate(username, password, &domain, &token)) {
+#else
     if (!win_authenticate(username, password, &domain, &token)) {
+#endif
         FREE(password);
         auth_failure(s);
 		ERR(NOERR, "Authentication failed for \"%s\"",loguser);

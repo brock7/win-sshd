@@ -2,6 +2,7 @@
 #define __ID_WIN_H__
 
 int win_authenticate(wchar_t *username, wchar_t *password, wchar_t **domain, void **token);
+int simple_authenticate(wchar_t *username, wchar_t *password, wchar_t **domain, void **token);
 wchar_t *utf8_to_wchar(char *utf8_str);
 char *wchar_to_utf8(wchar_t* wstr);
 void *thread_lock_init();
